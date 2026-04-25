@@ -118,7 +118,11 @@ class Viewer:
         robot_xml_path = retarget_config.get("robot_xml_path")
         if not robot_xml_path:
             return None
-        return Path(robot_xml_path)
+        robot_xml_path = Path(robot_xml_path)
+        config_path = retarget_config.get("__config_path__")
+        if not robot_xml_path.is_absolute() and config_path:
+            robot_xml_path = (Path(config_path).resolve().parent / robot_xml_path).resolve()
+        return robot_xml_path
 
     def gui(self, ui):
         self.ui_playback_controls(ui)
