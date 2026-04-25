@@ -1,0 +1,10 @@
+{
+    "import_folder": "../../motions/bvh",
+    "export_folder": "export",
+    "batch_size": 2,
+    "retargeter": "Newton",
+    "retarget_source": "soma",
+    "retarget_target": "unitree_g1",
+    "retarget_source_facing_direction": "Mujoco",
+    "retargeter_config_path": "soma_to_sentient_humanoid_retargeter_config_with_scaler.json"
+}

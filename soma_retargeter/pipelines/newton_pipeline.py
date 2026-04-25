@@ -6,6 +6,7 @@ import numpy as np
 import newton
 import newton.ik as ik
 from tqdm import trange
+from pathlib import Path
 
 import soma_retargeter.assets.bvh as bvh_utils
 import soma_retargeter.utils.newton_utils as newton_utils
@@ -24,6 +25,21 @@ _DEFAULT_JOINT_LIMIT_OBJECTIVE_WEIGHT = 10.0
 _DEFAULT_SMOOTH_JOINT_FILTER_OBJECTIVE_WEIGHT = 5.5
 _DEFAULT_NUM_INITIALIZATION_FRAMES = 10
 _DEFAULT_NUM_STABILIZATION_FRAMES = 5
+
+
+def _resolve_config_path(path_str, config_dir=None):
+    if path_str is None:
+        return None
+    path = Path(path_str)
+    if path.is_absolute():
+        return path
+    if config_dir is not None:
+        candidate = (config_dir / path).resolve()
+        if candidate.exists():
+            return candidate
+    if path.exists():
+        return path.resolve()
+    return io_utils.get_config_file(path_str)
 
 
 class NewtonPipeline:
@@ -68,14 +84,25 @@ class NewtonPipeline:
         self.enable_self_penetration = False
         self.smooth_joint_filter_coord_masks = None
         self.joint_limit_clamper = None
+        self.feet_stabilizer = None
+        config_dir = None
+        config_path = retargeter_config.get("__config_path__")
+        if config_path:
+            config_dir = Path(config_path).resolve().parent
 
         if (self.target_type == pipeline_utils.TargetType.UNITREE_G1):
             self.robot_builder = newton.ModelBuilder()
-            self.robot_builder.add_mjcf(
-                newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
+            robot_xml_path = retargeter_config.get("robot_xml_path", None)
+            if robot_xml_path:
+                self.robot_builder.add_mjcf(_resolve_config_path(robot_xml_path, config_dir))
+            else:
+                self.robot_builder.add_mjcf(
+                    newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
 
             self.human_robot_scaler = HumanToRobotScaler(
-                skeleton, retargeter_config['model_height'], io_utils.get_config_file(retargeter_config['human_robot_scaler_config']))
+                skeleton,
+                retargeter_config['model_height'],
+                _resolve_config_path(retargeter_config['human_robot_scaler_config'], config_dir))
 
             self.num_body_count = self.robot_builder.body_count
             self.num_dofs = self.robot_builder.joint_dof_count
@@ -102,14 +129,18 @@ class NewtonPipeline:
                 self.mapped_joints.index("LeftFoot"),
                 self.mapped_joints.index("RightFoot")]
 
-            self.feet_stabilizer = FeetStabilizer(io_utils.get_config_file(retargeter_config['feet_stabilizer_config']))
+            feet_stabilizer_config = retargeter_config.get('feet_stabilizer_config')
+            if self.post_processing_enabled and feet_stabilizer_config:
+                self.feet_stabilizer = FeetStabilizer(_resolve_config_path(feet_stabilizer_config, config_dir))
             self.joint_limit_clamper = JointLimitClamper(self.ik_model)
 
             self.initialization_pose = None
             self.num_initialization_frames = 0
             self.num_stabilization_frames = 0
             if (retargeter_config['initialization_pose']):
-                init_skel, init_anim = bvh_utils.load_bvh(io_utils.get_config_file(retargeter_config['initialization_pose']))
+                init_skel, init_anim = bvh_utils.load_bvh(
+                    _resolve_config_path(retargeter_config['initialization_pose'], config_dir)
+                )
                 self.initialization_pose = SkeletonInstance(init_skel, [0, 0, 0], wp.transform_identity())
                 self.initialization_pose.set_local_transforms(init_anim.get_local_transforms(0))
                 self.num_initialization_frames = retargeter_config.get('num_initialization_frames', _DEFAULT_NUM_INITIALIZATION_FRAMES)

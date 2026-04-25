@@ -21,6 +21,7 @@ from soma_retargeter.animation.skeleton import SkeletonInstance
 from soma_retargeter.utils.space_conversion_utils import SpaceConverter, get_facing_direction_type_from_str
 
 from tqdm import trange
+from pathlib import Path
 
 _UI_NEWTON_PANEL_WIDTH  = 320
 _UI_NEWTON_PANEL_MARGIN = 10
@@ -32,6 +33,7 @@ class Viewer:
         self.viewer = viewer
         self.viewer.vsync = True
         self.config = config
+        self.config_path = Path(config.get("__config_path__", "")).resolve() if config.get("__config_path__") else None
         self.converter = SpaceConverter(get_facing_direction_type_from_str(self.config['retarget_source_facing_direction']))
 
         if isinstance(self.viewer, newton.viewer.ViewerNull):
@@ -63,25 +65,29 @@ class Viewer:
         self.viewer.renderer.set_title("BVH to CSV Converter")
         self.viewer.register_ui_callback(lambda ui: self.gui(ui), position="free")
 
-        g1_builder = newton.ModelBuilder()
-        g1_builder.add_mjcf(
-            newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
+        robot_builder = newton.ModelBuilder()
+        preview_robot_xml = self._get_preview_robot_xml()
+        if preview_robot_xml is not None:
+            robot_builder.add_mjcf(preview_robot_xml)
+        else:
+            robot_builder.add_mjcf(
+                newton.utils.download_asset("unitree_g1") / "mjcf/g1_29dof_rev_1_0.xml")
         
         self.num_robots = 1
         self.robot_offsets = [wp.transform(wp.vec3(0.0, i - (self.num_robots - 1) / 2.0, 0.0), wp.quat_identity()) for i in range(self.num_robots)]
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for _ in range(self.num_robots):
-            builder.add_builder(g1_builder, wp.transform_identity())
+            builder.add_builder(robot_builder, wp.transform_identity())
         self.model = builder.finalize()
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets([0, 0, 0])
         self.state = self.model.state()
 
-        self.g1_num_joint_q = self.model.joint_coord_count // self.model.articulation_count
-        self.g1_joint_q_offsets = [int(i * self.g1_num_joint_q) for i in range(self.model.articulation_count)]
-        self.g1_default_joint_q_values = self.model.joint_q.numpy()
+        self.robot_num_joint_q = self.model.joint_coord_count // self.model.articulation_count
+        self.robot_joint_q_offsets = [int(i * self.robot_num_joint_q) for i in range(self.model.articulation_count)]
+        self.robot_default_joint_q_values = self.model.joint_q.numpy()
 
         self.coordinate_renderer = CoordinateRenderer()
         self.skeleton = None
@@ -92,6 +98,27 @@ class Viewer:
         self.animation_buffers = []
         self.skeleton_instances = []
         self.robot_csv_animation_buffers = [None for _ in range(self.num_robots)]
+
+
+    def _load_external_retarget_config(self):
+        config_path = self.config.get("retargeter_config_path")
+        if not config_path:
+            return None
+        config_path = Path(config_path)
+        if not config_path.is_absolute() and self.config_path is not None:
+            config_path = (self.config_path.parent / config_path).resolve()
+        retarget_config = io_utils.load_json(config_path)
+        retarget_config["__config_path__"] = str(config_path)
+        return retarget_config
+
+    def _get_preview_robot_xml(self):
+        retarget_config = self._load_external_retarget_config()
+        if not retarget_config:
+            return None
+        robot_xml_path = retarget_config.get("robot_xml_path")
+        if not robot_xml_path:
+            return None
+        return Path(robot_xml_path)
 
     def gui(self, ui):
         self.ui_playback_controls(ui)
@@ -139,7 +166,7 @@ class Viewer:
         for i in range(self.num_robots):
             robot_offset = self.robot_offsets[i]
 
-            joint_q_offset = self.g1_joint_q_offsets[i]
+            joint_q_offset = self.robot_joint_q_offsets[i]
             if self.robot_csv_animation_buffers[i] is not None:
                 buffer = self.robot_csv_animation_buffers[i]
                 # Apply visual offset
@@ -147,18 +174,18 @@ class Viewer:
                 buffer.xform = robot_offset
 
                 data = buffer.sample(self.playback_time)
-                wp.copy(self.model.joint_q, wp.array(data, dtype=wp.float32), joint_q_offset, 0, self.g1_num_joint_q)
+                wp.copy(self.model.joint_q, wp.array(data, dtype=wp.float32), joint_q_offset, 0, self.robot_num_joint_q)
                 buffer.xform = prev_xform
             else:
                 root_tx = wp.mul(
                     robot_offset,
-                    wp.transform(*self.g1_default_joint_q_values[joint_q_offset:(joint_q_offset + 7)]))
+                    wp.transform(*self.robot_default_joint_q_values[joint_q_offset:(joint_q_offset + 7)]))
 
                 wp.copy(
                     self.model.joint_q,
-                    wp.array(self.g1_default_joint_q_values[joint_q_offset:(joint_q_offset + self.g1_num_joint_q)], dtype=wp.float32),
+                    wp.array(self.robot_default_joint_q_values[joint_q_offset:(joint_q_offset + self.robot_num_joint_q)], dtype=wp.float32),
                     joint_q_offset,
-                    0, self.g1_num_joint_q)
+                    0, self.robot_num_joint_q)
                 wp.copy(self.model.joint_q, wp.array(root_tx[0:7], dtype=wp.float32), joint_q_offset, 0, 7)
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state, None)
@@ -227,7 +254,12 @@ class Viewer:
         
         if (retarget_solver == 'Newton'):
             import soma_retargeter.pipelines.newton_pipeline as newton_pipeline
-            pipeline = newton_pipeline.NewtonPipeline(self.skeleton, retarget_source, retarget_target)
+            pipeline = newton_pipeline.NewtonPipeline(
+                self.skeleton,
+                retarget_source,
+                retarget_target,
+                self._load_external_retarget_config(),
+            )
         else:
             raise(ValueError(f"[ERROR]: Unknown retargeter solver [{retarget_solver}"))
         
@@ -431,7 +463,12 @@ class Viewer:
         retarget_pipeline = None
         if (retarget_solver == 'Newton'):
             import soma_retargeter.pipelines.newton_pipeline as newton_pipeline
-            retarget_pipeline = newton_pipeline.NewtonPipeline(bvh_skeleton, retarget_source, retarget_target)
+            retarget_pipeline = newton_pipeline.NewtonPipeline(
+                bvh_skeleton,
+                retarget_source,
+                retarget_target,
+                self._load_external_retarget_config(),
+            )
         if retarget_pipeline is None:
             print(f"[ERROR]: Invalid retarget solver selected [{retarget_solver}]. Use 'Newton'.")
             exit(-1)
@@ -492,7 +529,13 @@ def main():
         print(f"[ERROR]: Main config json file not found: {args.config}")
         exit(1)
 
-    config = io_utils.load_json(args.config)
+    config_path = pathlib.Path(args.config).resolve()
+    config = io_utils.load_json(config_path)
+    config["__config_path__"] = str(config_path)
+    for key in ("import_folder", "export_folder"):
+        value = config.get(key)
+        if value and not pathlib.Path(value).is_absolute():
+            config[key] = str((config_path.parent / value).resolve())
     with wp.ScopedDevice(args.device):
         app = Viewer(viewer, config)
         if not isinstance(viewer, newton.viewer.ViewerNull):

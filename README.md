@@ -5,7 +5,7 @@
 
 Convert [SOMA](https://github.com/NVlabs/SOMA-X) human motion captures into humanoid robot joint animation. Takes BVH motion files as input and produces robot-playable CSV joint data as output using GPU-optimized inverse kinematics via [Newton](https://github.com/newton-physics/newton) and high-performance computation with [NVIDIA Warp](https://github.com/NVIDIA/warp).
 
-The retargeting pipeline handles proportional human-to-robot scaling, multi-objective IK solving with joint limits, feet stabilization to maintain ground contact, and per-DOF joint limit clamping. Currently supports SOMA as the input skeleton and Unitree G1 (29 DOF) as the output robot. Additional robot targets are planned.
+The retargeting pipeline handles proportional human-to-robot scaling, multi-objective IK solving with joint limits, feet stabilization to maintain ground contact, and per-DOF joint limit clamping. The default packaged target is Unitree G1 (29 DOF), and this fork also adds a repo-owned Sentient humanoid example driven by an external MJCF/XML robot description and custom retargeter configs.
 
 SOMA Retargeter is part of the [SOMA body model](https://github.com/NVlabs/SOMA-X) ecosystem for humanoid motion data.
 
@@ -106,6 +106,52 @@ python ./app/bvh_to_csv_converter.py --config ./assets/default_bvh_to_csv_conver
 ```
 
 Batch mode recursively finds all `.bvh` files in the import folder, processes them in configurable batch sizes, and writes CSV files to the export folder mirroring the input directory structure.
+
+## Sentient Humanoid Example In This Fork
+
+This fork includes a repo-owned custom robot example under:
+
+```bash
+assets/custom_robots/sentient_humanoid/
+```
+
+The goal of this folder is to keep the robot-specific XML and retargeter configs inside the repo, rather than depending on a Desktop-only `correct_files` directory.
+
+### Run the custom Sentient humanoid viewer
+
+```bash
+python ./app/bvh_to_csv_converter.py --config ./assets/custom_robots/sentient_humanoid/bvh_to_sentient_humanoid_config.json --viewer gl
+```
+
+### Run the custom Sentient humanoid batch export
+
+```bash
+python ./app/bvh_to_csv_converter.py --config ./assets/custom_robots/sentient_humanoid/bvh_to_sentient_humanoid_config.json --viewer null
+```
+
+### Files in `assets/custom_robots/sentient_humanoid/`
+
+| File | Purpose |
+|------|---------|
+| `bvh_to_sentient_humanoid_config.json` | Top-level viewer and batch config. Points the app to the Sentient humanoid retargeter config and the export folder in this repo. |
+| `soma_to_sentient_humanoid_retargeter_config_with_scaler.json` | Main custom retargeter config used by the viewer and batch flow. Enables the custom robot XML and repo-owned scaler config. |
+| `soma_to_sentient_humanoid_retargeter_config.json` | Alternate retargeter config for the same robot. Useful as a second tuning snapshot while keeping the same custom XML/scaler path layout. |
+| `soma_to_sentient_humanoid_scaler_config.json` | Human-to-robot scaling, parent offsets, and joint scaling values for the Sentient humanoid target. |
+| `sentient_humanoid.xml` | MJCF/XML robot description for the Sentient humanoid target used by Newton preview and retargeting output. |
+| `recorded_retarget_remapped.csv` | A remapped retarget output sample captured during debugging and used for comparison against robot playback. |
+| `export/*.csv` | Sample exported robot motion CSV files produced with the custom Sentient humanoid configuration. These are useful for regression checks and replay tests. |
+
+### Notes About Path Handling
+
+This fork adds relative-path support for:
+
+- `retargeter_config_path` in the top-level app config
+- `robot_xml_path` in the external retargeter config
+- `human_robot_scaler_config`
+- `feet_stabilizer_config`
+- `initialization_pose`
+
+That allows the custom robot files above to live inside the repo without requiring absolute `/home/...` paths.
 
 ## Code Overview
 
